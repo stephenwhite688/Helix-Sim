@@ -406,7 +406,35 @@ void BootFlow::DrawNameEntry(UiContext& ui) {
     const float cx = ui.ScreenW() * 0.5f;             // screen center X
     const float panelW = 560.f, panelH = 400.f;       // panel size (px)
     const float px = cx - panelW * 0.5f;              // panel left edge
-    const float py = ui.ScreenH() * 0.5f - panelH * 0.5f; // panel top edge
+
+    // ---- vertical layout: equal top/bottom gaps around the full stack ----
+    // Stack = H.E.L.I.X. banner + panel + flavor line + acronym expansion.
+    // Real ink bounds are measured so the gaps are truly equal at any size.
+    const std::string kFlavor =
+        "ALL FLIGHTS LOGGED  MISHAPS are FILED UNDER 'TRAINING'";
+    const std::string kExpansion =
+        "HELIX: Hypersonic Experimental Launch and Interplanetary eXplorer";
+    float bTop = 0.f, bH = 0.f, eTop = 0.f, eH = 0.f, fTop = 0.f, fH = 0.f;
+    font_.MeasureInkExtent("H.E.L.I.X.", 52.f, bTop, bH);
+    font_.MeasureInkExtent(kExpansion, 44.f, eTop, eH);
+    font_.MeasureInkExtent(kFlavor, 13.f, fTop, fH);
+    const float kPadTop = 28.f;   // banner ink bottom -> panel top
+    const float kPadMid = 14.f;   // panel bottom -> flavor ink top
+    const float kPadBE  = 10.f;   // flavor ink bottom -> expansion ink top
+    const float stackH = bH + kPadTop + panelH + kPadMid + fH + kPadBE + eH;
+    float gap = (ui.ScreenH() - stackH) * 0.5f;
+    if (gap < 8.f) gap = 8.f;
+
+    const float bannerY = gap - bTop;                       // banner line-box top
+    const float py = gap + bH + kPadTop;                    // panel top edge
+    const float expY = ui.ScreenH() - gap - (eTop + eH);    // expansion line-box top
+    const float flavY = expY + eTop - kPadBE - fTop - fH;   // flavor line-box top
+
+    // ship name banner above the panel
+    ui.Text(font_, 0.f, bannerY, 52.f, "H.E.L.I.X.", kAccent, 1, ui.ScreenW());
+    // bottom block: flavor line, then the acronym expansion
+    ui.Text(font_, 0.f, flavY, 13.f, kFlavor, kTextDim, 1, ui.ScreenW());
+    ui.Text(font_, 0.f, expY, 44.f, kExpansion, kTextDim, 1, ui.ScreenW());
 
     // "Cleared for flight" ceremony — replaces the form after ENLIST.
     if (nameDone_) {
@@ -439,7 +467,7 @@ void BootFlow::DrawNameEntry(UiContext& ui) {
             iw = sideSpace;
             ih = iw * (static_cast<float>(logoH_) / static_cast<float>(logoW_));
         }
-        const float iy = ui.ScreenH() * 0.5f - ih * 0.5f;
+        const float iy = py + panelH * 0.5f - ih * 0.5f; // centered on panel
         ui.Image(logoTexture_, px - iw - 36.f, iy, iw, ih);
         ui.Image(logoTexture_, px + panelW + 36.f, iy, iw, ih);
     }
@@ -516,10 +544,6 @@ void BootFlow::DrawNameEntry(UiContext& ui) {
     if (!valid && !ui.TextBuffer().empty())
         ui.Text(font_, px, py + panelH - kHintFromBottom, 16.f,
                "1-16 chars: letters, numbers, space, - _", kWarn, 1, panelW);
-
-    // ---- flavor line under the panel ----
-    ui.Text(font_, 0.f, py + panelH + 18.f, 13.f,
-           "ALL FLIGHTS LOGGED  MISHAPS are FILED UNDER 'TRAINING'", kTextDim, 1, ui.ScreenW());
 }
 
 void BootFlow::DrawMainMenu(UiContext& ui) {
