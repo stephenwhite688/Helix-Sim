@@ -1,0 +1,18 @@
+# Build output
+build/
+x64/
+out/
+*.user
+*.suo
+
+# Visual Studio
+.vs/
+*.vcxproj.user
+
+# Logs & diagnostics
+*.log
+*_atlas.ppm
+
+# OS
+Thumbs.db
+Desktop.ini

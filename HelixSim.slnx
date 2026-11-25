@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Solution>
+	<Configurations>
+		<BuildType Name="Debug"/>
+		<BuildType Name="Release"/>
+		<BuildType Name="MinSizeRel"/>
+		<BuildType Name="RelWithDebInfo"/>
+		<Platform Name="x64"/>
+	</Configurations>
+	<Project Path="build\ALL_BUILD.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="d3bb440d-4a44-3824-894b-a8427a166f72">
+		<BuildDependency Project="build\HelixSim.vcxproj"/>
+		<BuildDependency Project="build\ZERO_CHECK.vcxproj"/>
+		<Build Solution="Debug|*" Project="false"/>
+		<Build Solution="Release|*" Project="false"/>
+		<Build Solution="MinSizeRel|*" Project="false"/>
+		<Build Solution="RelWithDebInfo|*" Project="false"/>
+	</Project>
+	<Project Path="build\HelixSim.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="ff02a3d8-f9dc-3de8-be44-b11fe69e3134" DefaultStartup="true">
+		<BuildDependency Project="build\ZERO_CHECK.vcxproj"/>
+	</Project>
+	<Project Path="build\ZERO_CHECK.vcxproj" Type="8bc9ceb8-8b4a-11d0-8d11-00a0c91bc942" Id="b4e147e3-0e1e-308b-be12-96a7ea06cf04"/>
+</Solution>
