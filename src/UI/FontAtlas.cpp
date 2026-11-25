@@ -227,8 +227,18 @@ bool FontAtlas::DebugInkRows(char c, std::vector<int>& rowCounts, int& cellTop,
 }
 
 void FontAtlas::UploadTo(helix::renderer::D3D12Renderer& renderer) {
+    // Expand R8 coverage to RGBA (white RGB, coverage as alpha) so the UI
+    // shader can modulate vertex color x texture for rects, glyphs and
+    // images with one code path.
+    std::vector<uint8_t> rgba(coverage_.size() * 4);
+    for (size_t i = 0; i < coverage_.size(); ++i) {
+        rgba[i * 4 + 0] = 255;
+        rgba[i * 4 + 1] = 255;
+        rgba[i * 4 + 2] = 255;
+        rgba[i * 4 + 3] = coverage_[i];
+    }
     textureIndex_ = renderer.CreateUiTexture(atlasWidth_, atlasHeight_,
-                                             DXGI_FORMAT_R8_UNORM, coverage_.data());
+                                             DXGI_FORMAT_R8G8B8A8_UNORM, rgba.data());
 }
 
 float FontAtlas::MeasureWidth(const std::string& utf8, float heightPx) const {

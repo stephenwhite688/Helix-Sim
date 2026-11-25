@@ -88,6 +88,15 @@ private:
     bool debriefComplete_ = false;
     bool wantsQuit_ = false;
     bool firstRun_ = true;
+
+    // Name-entry "cleared for flight" ceremony state
+    bool nameDone_ = false;
+    float ceremonyT_ = 0.f;
+    std::string inductionName_;
+
+    // Crest/logo UI texture (optional — UINT_MAX when no image found)
+    UINT logoTexture_ = UINT_MAX;
+    UINT logoW_ = 0, logoH_ = 0;
 };
 
 } // namespace helix::ui

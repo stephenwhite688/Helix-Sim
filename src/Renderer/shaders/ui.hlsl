@@ -33,6 +33,9 @@ VSOut VSMain(VSIn i) {
 }
 
 float4 PSMain(VSOut i) : SV_TARGET {
-    float coverage = uiTexture.Sample(uiSampler, i.uv).r;
-    return float4(i.col.rgb, i.col.a * coverage);
+    // Modulate: vertex color x texture. Font atlas uploads as RGBA
+    // (white RGB, coverage alpha); images upload as RGBA with their own
+    // alpha — one shader serves tinted rects, glyphs and pictures.
+    float4 t = uiTexture.Sample(uiSampler, i.uv);
+    return float4(i.col.rgb * t.rgb, i.col.a * t.a);
 }

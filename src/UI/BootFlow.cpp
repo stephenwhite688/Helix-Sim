@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cmath>
+#include <wincodec.h>
+#include <wrl/client.h>
+using Microsoft::WRL::ComPtr;
 
 namespace helix::ui {
 
@@ -32,6 +35,83 @@ std::string FormatClock(float seconds) {
     snprintf(buf, sizeof(buf), "%d:%02d", s / 60, s % 60);
     return buf;
 }
+
+// Decode a PNG via WIC into a tightly-packed RGBA8 buffer for
+// D3D12Renderer::CreateUiTexture. Returns false on any failure (missing
+// file, bad image) — callers treat the logo as optional.
+bool LoadPngRGBA(const wchar_t* path, std::vector<uint8_t>& pixels,
+                 UINT& outW, UINT& outH) {
+    pixels.clear();
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    bool comInit = SUCCEEDED(hr) || hr == RPC_E_CHANGED_MODE;
+    if (!comInit) return false;
+
+    bool ok = false;
+    ComPtr<IWICImagingFactory2> factory;
+    if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory2, nullptr,
+                                 CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory)))) {
+        ComPtr<IWICBitmapDecoder> decoder;
+        ComPtr<IWICBitmapFrameDecode> frame;
+        ComPtr<IWICFormatConverter> converter;
+        if (SUCCEEDED(factory->CreateDecoderFromFilename(
+                path, nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder)) &&
+            SUCCEEDED(decoder->GetFrame(0, &frame))) {
+            UINT w = 0, h = 0;
+            frame->GetSize(&w, &h);
+            if (w > 0 && h > 0 && w <= 4096 && h <= 4096 &&
+                SUCCEEDED(factory->CreateFormatConverter(&converter)) &&
+                SUCCEEDED(converter->Initialize(frame.Get(),
+                        GUID_WICPixelFormat32bppRGBA,
+                        WICBitmapDitherTypeNone, nullptr, 0.0,
+                        WICBitmapPaletteTypeCustom))) {
+                pixels.resize(static_cast<size_t>(w) * h * 4);
+                if (SUCCEEDED(converter->CopyPixels(nullptr, w * 4,
+                        static_cast<UINT>(pixels.size()), pixels.data()))) {
+                    outW = w; outH = h; ok = true;
+                }
+            }
+        }
+    }
+    if (SUCCEEDED(hr)) CoUninitialize();
+    return ok;
+}
+
+// The key art is fully opaque — its near-black background would hide the
+// starfield. Convert luminance to alpha so dark backdrop pixels become
+// transparent (kept soft-edged to avoid a hard halo around the subject).
+void KeyOutDarkBackground(std::vector<uint8_t>& pixels, float lo = 14.f, float hi = 60.f) {
+    for (size_t i = 0; i + 3 < pixels.size(); i += 4) {
+        float lum = 0.299f * pixels[i] + 0.587f * pixels[i + 1] + 0.114f * pixels[i + 2];
+        float a = (lum - lo) / (hi - lo);
+        a = a < 0.f ? 0.f : (a > 1.f ? 1.f : a);
+        pixels[i + 3] = static_cast<uint8_t>(a * 255.f);
+    }
+}
+
+// Drifting twinkling starfield drawn behind boot screens. Deterministic
+// per-star hash — no RNG state, same sky every run.
+void DrawStarfield(UiContext& ui, float w, float h, float t) {
+    constexpr int kStars = 140;
+    for (int i = 0; i < kStars; ++i) {
+        float h1 = std::fabs(std::sin(i * 127.1f + 311.7f) * 43758.5453f);
+        float h2 = std::fabs(std::sin(i * 269.5f + 183.3f) * 28001.8384f);
+        float h3 = std::fabs(std::sin(i * 419.2f +  74.7f) * 12433.8197f);
+        float h4 = std::fabs(std::sin(i *  71.9f + 402.1f) * 19642.3490f);
+        h1 -= std::floor(h1); h2 -= std::floor(h2);
+        h3 -= std::floor(h3); h4 -= std::floor(h4);
+
+        float speed = 5.f + h3 * 14.f;                    // px/sec drift
+        float sx = h1 * w + std::sin(t * 0.3f + h4 * 6.28f) * 6.f;
+        float sy = std::fmod(h2 * (h + 40.f) + t * speed, h + 40.f) - 20.f;
+        float size = 1.f + h4 * 1.8f;
+        float tw = 0.30f + 0.55f * (0.5f + 0.5f * std::sin(t * (0.8f + h3) + h4 * 6.28f));
+        float c[4];
+        if (h3 > 0.88f) { c[0]=kAccent[0]; c[1]=kAccent[1]; c[2]=kAccent[2]; } // rare cyan star
+        else           { c[0]=0.85f;    c[1]=0.90f;    c[2]=1.00f;    }
+        c[3] = tw;
+        ui.Rect(sx, sy, size, size, c);
+    }
+}
 } // namespace
 
 bool BootFlow::Initialize(helix::renderer::D3D12Renderer& renderer, int width, int height) {
@@ -54,7 +134,7 @@ void BootFlow::RunInitStep() {
             if (!font_.Build(L"Segoe UI", 42)) {
                 helix::log::Error("BootFlow: font atlas build failed");
                 loadStatus_ = "FONT ATLAS FAILED";
-                initStep_ = 5; // skip to done — menus will be textless but alive
+                initStep_ = 6; // skip to done — menus will be textless but alive
                 break;
             }
             ++initStep_;
@@ -65,8 +145,8 @@ void BootFlow::RunInitStep() {
             // draws buckets in texture-index order, so panels (white) render
             // before text (atlas).
             {
-                static const uint8_t white = 255;
-                renderer_->CreateUiTexture(1, 1, DXGI_FORMAT_R8_UNORM, &white);
+                static const uint8_t white[4] = { 255, 255, 255, 255 };
+                renderer_->CreateUiTexture(1, 1, DXGI_FORMAT_R8G8B8A8_UNORM, white);
                 font_.UploadTo(*renderer_);
             }
             helix::log::Info("BootFlow: UI textures uploaded (white=0 atlas=%u)", font_.TextureIndex());
@@ -87,11 +167,48 @@ void BootFlow::RunInitStep() {
             ++initStep_;
             break;
         case 4:
+            loadStatus_ = "LOADING CREST";
+            {
+                // Logo/crest next to the exe's Resources folder (copied by
+                // the CMake post-build step). Optional — menus still work
+                // without it.
+                wchar_t exePath[MAX_PATH];
+                GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+                std::wstring dir(exePath);
+                dir = dir.substr(0, dir.find_last_of(L"\\/")) + L"\\Resources\\";
+                // Prefer a dedicated logo file (real alpha); the key-art
+                // fallbacks are opaque, so dark-key their backgrounds.
+                struct Candidate { const wchar_t* name; bool keyDark; };
+                const Candidate candidates[] = {
+                    { L"logo.png", false },
+                    { L"HelixSim.png", true },
+                    { L"Helix_Flight_sim.png", true },
+                    { L"Helix Flight sim.jpg", true },
+                };
+                for (const auto& cand : candidates) {
+                    std::vector<uint8_t> px; UINT w = 0, h = 0;
+                    if (LoadPngRGBA((dir + cand.name).c_str(), px, w, h)) {
+                        if (cand.keyDark) KeyOutDarkBackground(px);
+                        logoTexture_ = renderer_->CreateUiTexture(
+                            static_cast<int>(w), static_cast<int>(h),
+                            DXGI_FORMAT_R8G8B8A8_UNORM, px.data());
+                        logoW_ = w; logoH_ = h;
+                        helix::log::Info("BootFlow: crest loaded '%ls' %ux%u -> slot %u",
+                                         cand.name, w, h, logoTexture_);
+                        break;
+                    }
+                }
+                if (logoTexture_ == UINT_MAX)
+                    helix::log::Info("BootFlow: no crest image found (optional)");
+            }
+            ++initStep_;
+            break;
+        case 5:
             loadStatus_ = "READY";
             helix::log::Info("BootFlow: init complete -> %s",
                              (firstRun_ && !profile_.introCompleted) ? "NameEntry" : "MainMenu");
             GoTo(firstRun_ && !profile_.introCompleted ? Screen::NameEntry : Screen::MainMenu);
-            initStep_ = 5;
+            initStep_ = 6;
             break;
         default:
             break;
@@ -117,19 +234,29 @@ void BootFlow::Update(UiContext& ui, float dt) {
             break;
 
         case Screen::NameEntry: {
+            if (nameDone_) {
+                ceremonyT_ += dt;
+                if (ceremonyT_ > 2.8f) {
+                    nameDone_ = false;
+                    GoTo(Screen::MainMenu);
+                }
+                break;
+            }
             ui.SetTextFocusId(ID_NAME_SUBMIT);
+            auto acceptCallsign = [&]() {
+                inductionName_ = ui.TextBuffer();
+                profile_.callsign = inductionName_;
+                profile_.introCompleted = true;
+                profile_.Save();
+                ui.TextBuffer().clear();
+                firstRun_ = false;
+                nameDone_ = true;
+                ceremonyT_ = 0.f;
+            };
             if (ui.TakeSubmit() && Profile::IsValidCallsign(ui.TextBuffer())) {
-                profile_.callsign = ui.TextBuffer();
-                profile_.Save();
-                ui.TextBuffer().clear();
-                firstRun_ = false;
-                GoTo(Screen::MainMenu);
+                acceptCallsign();
             } else if (hit == ID_NAME_SUBMIT && Profile::IsValidCallsign(ui.TextBuffer())) {
-                profile_.callsign = ui.TextBuffer();
-                profile_.Save();
-                ui.TextBuffer().clear();
-                firstRun_ = false;
-                GoTo(Screen::MainMenu);
+                acceptCallsign();
             }
             break;
         }
@@ -223,7 +350,7 @@ void BootFlow::DrawBootLoading(UiContext& ui) {
 
     const float cx = ui.ScreenW() * 0.5f;
     // Big title — the "large futuristic text" splash look.
-    ui.Text(font_, 0.f, ui.ScreenH() * 0.34f, 110.f, "HELIXSIM", kAccent, 1, ui.ScreenW());
+    ui.Text(font_, 0.f, ui.ScreenH() * 0.34f, 110.f, "HELIX", kAccent, 1, ui.ScreenW());
     ui.Text(font_, 0.f, ui.ScreenH() * 0.34f + 120.f, 24.f,
            "VANGUARD SPACE COMMAND", kTextDim, 1, ui.ScreenW());
 
@@ -273,25 +400,84 @@ void BootFlow::DrawBootLoading(UiContext& ui) {
 // ============================================================================
 void BootFlow::DrawNameEntry(UiContext& ui) {
     ui.Rect(0, 0, ui.ScreenW(), ui.ScreenH(), kBg);   // fullscreen backdrop
+    DrawStarfield(ui, ui.ScreenW(), ui.ScreenH(), splashTimer_);
 
     // ---- anchors ----
     const float cx = ui.ScreenW() * 0.5f;             // screen center X
     const float panelW = 560.f, panelH = 400.f;       // panel size (px)
     const float px = cx - panelW * 0.5f;              // panel left edge
     const float py = ui.ScreenH() * 0.5f - panelH * 0.5f; // panel top edge
+
+    // "Cleared for flight" ceremony — replaces the form after ENLIST.
+    if (nameDone_) {
+        ui.Panel(cx - 240.f, ui.ScreenH() * 0.5f - 110.f, 480.f, 220.f,
+                 kPanel, kPanelEdge);
+        const float cy = ui.ScreenH() * 0.5f;
+        if (ceremonyT_ < 0.9f) {
+            float pulse = 0.6f + 0.4f * std::sin(splashTimer_ * 6.f);
+            float pc[4] = { kText[0], kText[1], kText[2], pulse };
+            ui.Text(font_, 0, cy - 60.f, 30.f, "PROCESSING", pc, 1, ui.ScreenW());
+            ui.Text(font_, 0, cy - 18.f, 16.f, "VERIFIED AGAINST PERSONNEL FILES", kTextDim, 1, ui.ScreenW());
+        } else {
+            ui.Text(font_, 0, cy - 78.f, 38.f, "CLEARED FOR FLIGHT", kAccent, 1, ui.ScreenW());
+            ui.Text(font_, 0, cy - 28.f, 22.f, "WELCOME ABOARD, " + inductionName_, kText, 1, ui.ScreenW());
+            ui.Text(font_, 0, cy + 8.f, 15.f, "REPORTING TO MAIN MENU", kTextDim, 1, ui.ScreenW());
+        }
+        return;
+    }
+
     ui.Panel(px, py, panelW, panelH, kPanel, kPanelEdge); // draw the box
+
+    // ---- crest flanking the panel ----
+    // The PNG has a transparent background, so the starfield shows through.
+    // Aspect ratio is preserved; size is clamped to the side margins.
+    if (logoTexture_ != UINT_MAX) {
+        const float sideSpace = (ui.ScreenW() - panelW) * 0.5f - 24.f;
+        float ih = panelH * 0.72f;
+        float iw = ih * (static_cast<float>(logoW_) / static_cast<float>(logoH_));
+        if (iw > sideSpace) {
+            iw = sideSpace;
+            ih = iw * (static_cast<float>(logoH_) / static_cast<float>(logoW_));
+        }
+        const float iy = ui.ScreenH() * 0.5f - ih * 0.5f;
+        ui.Image(logoTexture_, px - iw - 36.f, iy, iw, ih);
+        ui.Image(logoTexture_, px + panelW + 36.f, iy, iw, ih);
+    }
+
+    // HUD targeting-frame corner brackets around the panel
+    {
+        const float arm = 22.f, th = 2.f, off = 7.f;
+        // horizontal arms (top-left, top-right, bottom-left, bottom-right)
+        ui.Rect(px - off, py - off, arm, th, kAccent);
+        ui.Rect(px + panelW + off - arm, py - off, arm, th, kAccent);
+        ui.Rect(px - off, py + panelH + off - th, arm, th, kAccent);
+        ui.Rect(px + panelW + off - arm, py + panelH + off - th, arm, th, kAccent);
+        // vertical arms
+        ui.Rect(px - off, py - off, th, arm, kAccent);
+        ui.Rect(px + panelW + off - th, py - off, th, arm, kAccent);
+        ui.Rect(px - off, py + panelH + off - arm, th, arm, kAccent);
+        ui.Rect(px + panelW + off - th, py + panelH + off - arm, th, arm, kAccent);
+    }
 
     // ==================== TWEAK POSITIONS HERE ====================
     // All values are pixels measured DOWN from the panel's top edge (py).
     // Bigger number = lower on screen. Change these, rebuild, done.
-    const float kTitleY    = 30.f;   // "PILOT REGISTRATION" title
-    const float kSubY      = 96.f;   // "Enter your callsign, Pilot:"
-    const float kFieldY    = 168.f;  // text input box top edge
+    const float kClassY    = 16.f;   // "VANGUARD SPACE COMMAND" header line
+    const float kTitleY    = 52.f;   // "PILOT REGISTRATION" title
+    const float kSubY      = 118.f;  // "Enter your callsign, Pilot:"
+    const float kLabelY    = 168.f;  // "CALLSIGN" field label
+    const float kFieldY    = 186.f;  // text input box top edge
     const float kFieldH    = 36.f;   // text input box height
     const float kFieldX    = 60.f;   // text box left inset from panel edge
-    const float kBtnFromBottom = 76.f; // REPORT button distance above panel bottom
+    const float kBtnFromBottom = 76.f; // ENLIST button distance above panel bottom
     const float kHintFromBottom = 18.f; // validation hint above panel bottom
     // ==============================================================
+
+    // ---- classification header + rule ----
+    ui.Text(font_, px, py + kClassY, 13.f,
+           "VANGUARD SPACE COMMAND PERSONNEL INDUCTION", kAccentDim, 1, panelW);
+    ui.Rect(px + 50.f, py + 44.f, panelW - 100.f, 1.f,
+            0.20f, 0.38f, 0.60f, 0.5f);
 
     // ---- title + subtitle (centered within the panel width) ----
     ui.Text(font_, px, py + kTitleY, 34.f, "PILOT REGISTRATION", kAccent, 1, panelW);
@@ -299,6 +485,7 @@ void BootFlow::DrawNameEntry(UiContext& ui) {
            "Enter your callsign, Pilot:", kTextDim, 1, panelW);
 
     // ---- text field ----
+    ui.Text(font_, px + kFieldX, py + kLabelY, 12.f, "CALLSIGN", kTextDim, 0);
     const float fx = px + kFieldX, fy = py + kFieldY;
     const float fw = panelW - kFieldX * 2.f, fh = kFieldH;
     ui.Rect(fx, fy, fw, fh, 0.02f, 0.03f, 0.06f, 1.f);  // field background
@@ -321,19 +508,23 @@ void BootFlow::DrawNameEntry(UiContext& ui) {
         ui.Rect(caretX, fy + 8.f, 2.f, 20.f, kAccent);
     }
 
-    // ---- REPORT button ----
+    // ---- ENLIST button ----
     bool valid = Profile::IsValidCallsign(ui.TextBuffer()) && !ui.TextBuffer().empty();
     ui.Button(font_, ID_NAME_SUBMIT, cx - 110.f, py + panelH - kBtnFromBottom, 220.f, 48.f,
-              "REPORT", valid, false);
+              "ENLIST", valid, false);
     // validation hint: only shows while typing an invalid callsign
     if (!valid && !ui.TextBuffer().empty())
         ui.Text(font_, px, py + panelH - kHintFromBottom, 16.f,
                "1-16 chars: letters, numbers, space, - _", kWarn, 1, panelW);
 
+    // ---- flavor line under the panel ----
+    ui.Text(font_, 0.f, py + panelH + 18.f, 13.f,
+           "ALL FLIGHTS LOGGED  MISHAPS are FILED UNDER 'TRAINING'", kTextDim, 1, ui.ScreenW());
 }
 
 void BootFlow::DrawMainMenu(UiContext& ui) {
     ui.Rect(0, 0, ui.ScreenW(), ui.ScreenH(), kBg);
+    DrawStarfield(ui, ui.ScreenW(), ui.ScreenH(), splashTimer_);
     const float cx = ui.ScreenW() * 0.5f;
     ui.Text(font_, 0.f, ui.ScreenH() * 0.18f, 64.f, "HELIXSIM", kAccent, 1, ui.ScreenW());
     ui.Text(font_, 0.f, ui.ScreenH() * 0.18f + 74.f, 20.f,
@@ -351,6 +542,7 @@ void BootFlow::DrawMainMenu(UiContext& ui) {
 
 void BootFlow::DrawMissionSelect(UiContext& ui) {
     ui.Rect(0, 0, ui.ScreenW(), ui.ScreenH(), kBg);
+    DrawStarfield(ui, ui.ScreenW(), ui.ScreenH(), splashTimer_);
     const float mx = ui.ScreenW() * 0.08f, my = ui.ScreenH() * 0.10f;
     ui.Text(font_, mx, my, 40.f, "MISSION SELECT", kAccent);
 

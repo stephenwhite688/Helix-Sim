@@ -42,6 +42,8 @@ target_link_libraries(HelixSim PRIVATE
     user32.lib
     gdi32.lib
     hid.lib
+    windowscodecs.lib
+    ole32.lib
 )
 
 target_compile_definitions(HelixSim PRIVATE
